@@ -35,6 +35,7 @@ import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from 
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
+import { startMirror } from './mirror.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 
 const PORT = +(process.env.PORT || 3000);
@@ -97,6 +98,21 @@ const MAX_BODY = 5 * 1024 * 1024;
 const SECURE = /^https:/i.test(ORIGIN) ? ' Secure;' : '';
 
 fs.mkdirSync(DATA, { recursive: true });
+
+/* ---------- MongoDB mirror (optional) ----------
+ * With MONGODB_URI set, DATA_DIR is restored from Atlas here, before anything below reads a file,
+ * and every later change to a mirrored file is uploaded (mirror.js). For hosts whose disk is lost
+ * on restart. Unset, nothing changes. If Mongo is configured but unreachable the process exits:
+ * starting empty would replace the real session secret. */
+let MIRROR = null;
+if (process.env.MONGODB_URI) {
+  try {
+    MIRROR = await startMirror({ dir: DATA, uri: process.env.MONGODB_URI, dbName: process.env.MONGODB_DB || 'opengym' });
+  } catch (e) {
+    console.error('MongoDB mirror: cannot start (' + e.message + '). Refusing to boot without the stored data.');
+    process.exit(1);
+  }
+}
 /* The secrets are locked down file by file rather than by sealing the whole directory.
  *
  * A blanket `chmod 0700` on DATA looks stronger and is worse: ./data is a host bind mount and
@@ -2962,6 +2978,13 @@ const server = http.createServer(async (req, res) => {
     const wait = AUTH_BURST.take(addr) || (kind ? ADDR_FAILS.retryAfter(kind + '|' + addr) : 0);
     if (wait) return tooMany(res, wait);
   }
+  // A write is answered only once it is in Mongo as well (mirror.js), so a 200 still means the
+  // data survives a restart. Streaming reads are untouched. If Mongo does not answer in time the
+  // response goes out anyway and the upload is retried in the background.
+  if (MIRROR && req.method !== 'GET' && req.method !== 'HEAD') {
+    const end = res.end.bind(res);
+    res.end = (...a) => { MIRROR.flush().then(() => end(...a), () => end(...a)); return res; };
+  }
   try { await handler(req, res); }
   catch (e) {
     if (e?.clientGone) { console.warn(key, 'client went away mid-body:', e.message); return; }
@@ -2987,6 +3010,12 @@ const server = http.createServer(async (req, res) => {
 // uplink. Half an hour covers that; a stalled upload is cut much sooner by its own 60 s idle
 // timer in media.js, a client that never finishes its headers still meets headersTimeout, and
 // every other route's body still has to arrive within five minutes (bodyDeadline above).
+// A deploy or restart sends SIGTERM: get the last writes into Mongo before going.
+if (MIRROR) {
+  const bye = () => { MIRROR.flush(8000).finally(() => process.exit(0)); };
+  process.once('SIGTERM', bye);
+  process.once('SIGINT', bye);
+}
 server.requestTimeout = 30 * 60000;
 server.headersTimeout = 60000;
 // The port is read back off the listener rather than echoed from PORT, so the line states the
