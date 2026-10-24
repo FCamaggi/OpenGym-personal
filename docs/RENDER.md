@@ -39,13 +39,14 @@ HTTPS address:
 
 - `BACKEND=opengym-api-personal.onrender.com`
 - `BACKEND_SCHEME=https`
+- `BACKEND_PORT=443`
 - `BACKEND_HOST_HEADER=opengym-api-personal.onrender.com` (Render routes by Host header)
-- `PORT=443`
 - `RESOLVER=1.1.1.1`
-- `NGINX_PORT=10000` (Render's default port; or set the service's PORT to match)
+- `NGINX_PORT=10000`, and **remove** any `PORT` variable (or set it to `10000`): Render waits for
+  the web service on `PORT`, so it must not hold the API's port.
 
 If the API is a Render *private service* instead, use `BACKEND=opengym-api-personal`,
-`BACKEND_SCHEME=http`, `PORT=3000` and leave `BACKEND_HOST_HEADER` unset.
+`BACKEND_SCHEME=http`, `BACKEND_PORT=3000` and leave `BACKEND_HOST_HEADER` unset.
 
 ## Known limits
 

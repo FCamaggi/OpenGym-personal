@@ -74,6 +74,7 @@ COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 # of a server that 404s under the prefix. nginx's entrypoint runs these scripts in order; 05 is
 # before the template rendering at 20.
 COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
+COPY --chmod=644 web/10-backend-port.envsh /docker-entrypoint.d/
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see
 # catalogue/media/NOTICE.md. They ship inside the image; nothing is downloaded at start-up.
@@ -88,6 +89,9 @@ ENV PORT=3000
 # service is; then BACKEND_HOST_HEADER must be that API host, because the platform routes by Host.
 # The default "$host" passes the browser's own Host through, as before.
 ENV BACKEND_SCHEME=http
+# The port the API listens on. Defaults to PORT (web/10-backend-port.envsh), which is what compose,
+# Helm and the manifests set. Render gives the web service its own PORT to listen on (and waits for
+# nginx on it), so there the API's port can't be PORT: set BACKEND_PORT=443 for an https backend.
 ENV BACKEND_HOST_HEADER='$host'
 # The DNS nginx asks about BACKEND on every /api request. Docker's embedded resolver by
 # default, which is correct for compose. Nothing listens on it elsewhere, and an unreachable

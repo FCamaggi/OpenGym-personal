@@ -1,0 +1,4 @@
+# Sourced by nginx's entrypoint before the config template is rendered.
+# BACKEND_PORT = the port the API listens on; PORT when not set (compose, Helm, Kubernetes).
+: "${BACKEND_PORT:=${PORT:-3000}}"
+export BACKEND_PORT

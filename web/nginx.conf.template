@@ -55,7 +55,7 @@ server {
         # the DNS the platform actually provides: on Kubernetes that is the kube-dns/CoreDNS
         # service address (`kubectl -n kube-system get svc kube-dns`, commonly 10.96.0.10).
         resolver ${RESOLVER} valid=10s ipv6=off;
-        set $api_upstream ${BACKEND_SCHEME}://${BACKEND}:${PORT};
+        set $api_upstream ${BACKEND_SCHEME}://${BACKEND}:${BACKEND_PORT};
         # With a URI after the host, a proxy_pass built from variables sends that URI verbatim;
         # an empty one (the map's no-match case) sends the request's own target, as before.
         proxy_pass $api_upstream$api_request_uri;
@@ -98,7 +98,7 @@ server {
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
         resolver ${RESOLVER} valid=10s ipv6=off;
-        set $api_upstream ${BACKEND_SCHEME}://${BACKEND}:${PORT};
+        set $api_upstream ${BACKEND_SCHEME}://${BACKEND}:${BACKEND_PORT};
         # The same mapped target as the block above: under a prefix the upload has to reach the
         # API's /api/media/... route too.
         proxy_pass $api_upstream$api_request_uri;
