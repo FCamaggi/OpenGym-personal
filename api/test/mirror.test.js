@@ -77,3 +77,35 @@ test('a failed upload is reported and retried on the next pass', async t => {
   assert.equal(await m.flush(), true);
   assert.equal(col.docs.get('db.json').text, '{"users":[]}');
 });
+
+test('pull brings in what another instance uploaded, once, and not what it already holds', async t => {
+  const dir = tmp(t);
+  const col = fakeCol();
+  col.find = (q = {}) => ({ toArray: async () => [...col.docs.values()].filter(d => !(q.ts?.$gt >= 0) || d.ts > q.ts.$gt) });
+  const m = createMirror({ dir, col, log: quiet });
+  await m.restore();
+  col.docs.set('state-u1.json', { _id: 'state-u1.json', text: '{"_rev":1}', ts: Date.now() });
+  await m.pull();
+  assert.equal(fs.readFileSync(path.join(dir, 'state-u1.json'), 'utf8'), '{"_rev":1}');
+  // the file written by pull is not uploaded again
+  col.fail = true;
+  assert.equal(await m.sync(), true);
+  // a newer version replaces it
+  col.docs.set('state-u1.json', { _id: 'state-u1.json', text: '{"_rev":2}', ts: Date.now() + 10 });
+  await m.pull();
+  assert.equal(fs.readFileSync(path.join(dir, 'state-u1.json'), 'utf8'), '{"_rev":2}');
+});
+
+test('a challenge can be taken once, and not after it expired', async () => {
+  const { createChallengeStore } = await import('../mirror.js');
+  const docs = new Map();
+  const store = createChallengeStore({
+    insertOne: async d => { docs.set(d._id, d); },
+    findOneAndDelete: async f => { const d = docs.get(f._id); docs.delete(f._id); return d ?? null; },
+  });
+  await store.put('a', { challenge: 'x' }, Date.now() + 1000);
+  assert.deepEqual(await store.take('a'), { challenge: 'x' });
+  assert.equal(await store.take('a'), null);
+  await store.put('b', { challenge: 'y' }, Date.now() - 1);
+  assert.equal(await store.take('b'), null);
+});
