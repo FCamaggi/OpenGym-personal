@@ -79,6 +79,22 @@ server {
         # 504 here while the API was still working on it, which told the admin the wrong thing.
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+        # An API that is asleep or restarting (Render's free tier wakes in about a minute) makes
+        # nginx answer with its own HTML error page. The app reads every /api answer as JSON, so
+        # that page showed up as "HTTP 502". The same status, in the shape the API uses, with a
+        # hint to retry; the app treats 502/503/504 as "server unreachable" and tries again.
+        # Intercepting is what lets an upstream-sent 502 (Render's edge) get the same answer as
+        # one nginx makes itself; only the codes listed in error_page are touched.
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @api_waking;
+    }
+
+    location @api_waking {
+        default_type application/json;
+        add_header Retry-After "15" always;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        return 503 '{"error":"The server is waking up, try again in a moment."}';
     }
 
     # Photos and videos of custom exercises (PUT and GET under api/media/). Nginx picks the

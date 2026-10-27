@@ -443,7 +443,10 @@ export const useStore = create((set, get) => {
     next.status = statusOf(next, get().user)
     if (Object.keys(next).some(k => (k === 'lastError' ? !sameError(next[k], cur[k]) : next[k] !== cur[k]))) set({ sync: next })
   }
-  const isNetworkError = e => e && e.status == null   // fetch itself failed, or gave up: no response at all
+  // fetch itself failed or gave up (no response at all), or a gateway in front of the server
+  // answered for it: 502/503/504 is a host that is asleep or restarting (Render's free tier), the
+  // same "could not be reached" to the person, and it clears on its own.
+  const isNetworkError = e => e && (e.status == null || (e.status >= 502 && e.status <= 504))
   const refused = e => e?.status === 401 || e?.code === 'not-paired'
   // The server answered: whatever was wrong with the connection is over.
   const reached = (extra = {}) => setSync({ offline: false, auth: false, lastError: null, ...extra })

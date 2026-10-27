@@ -70,9 +70,17 @@ describe('sync status', () => {
     await useStore.getState().pushState()
     expect(useStore.getState().sync).toMatchObject({ status: 'error', offline: false, pending: true, lastError: { status: 500, code: 'http' } })
 
-    api.mockRejectedValueOnce(httpError(502))
+    api.mockRejectedValueOnce(httpError(418))
     await useStore.getState().pushState()
-    expect(useStore.getState().sync.lastError).toEqual({ status: 502, code: 'http' })   // a new code is news
+    expect(useStore.getState().sync.lastError).toEqual({ status: 418, code: 'http' })   // a new code is news
+
+    // A gateway answering for a server that is asleep or restarting (502/503/504) is "could not be
+    // reached", not a failure of the server's own: the banner says offline and the change stays owed.
+    for (const status of [502, 503, 504]) {
+      api.mockRejectedValueOnce(httpError(status))
+      await useStore.getState().pushState()
+      expect(useStore.getState().sync).toMatchObject({ status: 'offline', offline: true, pending: true, lastError: { status, code: 'network' } })
+    }
 
     api.mockRejectedValueOnce(httpError(401))
     await useStore.getState().pushState()
