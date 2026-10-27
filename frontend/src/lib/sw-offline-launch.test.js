@@ -183,3 +183,37 @@ describe('service worker offline cold-launch (issue #274)', () => {
     expect(await (await e.response).text()).toBe('cached-shell')
   })
 })
+
+describe('service worker with a host that is asleep (502/503/504)', () => {
+  const asleep = status => () => Promise.resolve(new Response('<h1>Bad Gateway</h1>', { status, headers: { 'content-type': 'text/html' } }))
+
+  for (const status of [502, 503, 504]) {
+    it(`a navigation answered ${status} is answered from the cached shell`, async () => {
+      const { listeners, cache } = loadServiceWorker({ fetchImpl: asleep(status) })
+      await cache.put('index.html', new Response('cached-shell'))
+
+      const e = makeFetchEvent('https://gym.example/')
+      listeners.fetch(e)
+      const res = await e.response
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('cached-shell')
+    })
+  }
+
+  it('with nothing cached (a first visit) the error goes through, and is not cached', async () => {
+    const { listeners, cache } = loadServiceWorker({ fetchImpl: asleep(502) })
+    const e = makeFetchEvent('https://gym.example/')
+    listeners.fetch(e)
+    const res = await e.response
+    expect(res.status).toBe(502)
+    expect(await cache.match('https://gym.example/')).toBeUndefined()
+  })
+
+  it('other errors (404) are still passed through, not replaced by the cache', async () => {
+    const { listeners, cache } = loadServiceWorker({ fetchImpl: () => Promise.resolve(new Response('nope', { status: 404 })) })
+    await cache.put('index.html', new Response('cached-shell'))
+    const e = makeFetchEvent('https://gym.example/missing.js', 'cors')
+    listeners.fetch(e)
+    expect((await e.response).status).toBe(404)
+  })
+})

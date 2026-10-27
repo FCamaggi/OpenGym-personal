@@ -281,6 +281,11 @@ self.addEventListener('fetch', e => {
     fetch(e.request).then(res => {
       clearTimeout(slow)
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {}) }
+      // A host that is asleep or restarting (Render's free tier, a deploy) answers the app itself
+      // with a 502/503/504: that is the platform's error page, not the app. When the cache holds
+      // the copy this device last ran, it answers instead, as it does for a dead network; with no
+      // copy (a first visit) the error goes through as it always did.
+      if (res.status >= 502 && res.status <= 504) { fromCache().then(hit => resolve(hit || res), () => resolve(res)); return }
       resolve(res)
     }, () => {
       clearTimeout(slow)
