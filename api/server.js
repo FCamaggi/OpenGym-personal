@@ -104,17 +104,10 @@ fs.mkdirSync(DATA, { recursive: true });
  * and every later change to a mirrored file is uploaded (mirror.js). For hosts whose disk is lost
  * on restart. Unset, nothing changes. If Mongo is configured but unreachable the process exits:
  * starting empty would replace the real session secret. */
-// On Vercel (serverless) there is no long-lived process: the mirror is pulled before each request
-// and flushed before each answer instead of polled, and WebAuthn challenges live in Mongo.
-const SERVERLESS = !!process.env.VERCEL;
 let MIRROR = null;
-if (SERVERLESS && !process.env.MONGODB_URI) {
-  console.error('Serverless needs MONGODB_URI: the function filesystem is discarded between requests.');
-  process.exit(1);
-}
 if (process.env.MONGODB_URI) {
   try {
-    MIRROR = await startMirror({ dir: DATA, uri: process.env.MONGODB_URI, dbName: process.env.MONGODB_DB || 'opengym', poll: !SERVERLESS });
+    MIRROR = await startMirror({ dir: DATA, uri: process.env.MONGODB_URI, dbName: process.env.MONGODB_DB || 'opengym' });
   } catch (e) {
     console.error('MongoDB mirror: cannot start (' + e.message + '). Refusing to boot without the stored data.');
     process.exit(1);
@@ -827,19 +820,13 @@ const challenges = new Map(); // cid -> {kind, challenge, name?, uid?, exp}
 // for five minutes, so the Map has a ceiling: past it the oldest goes. A ceremony takes seconds,
 // so only a flood far beyond any real sign-in traffic reaches back far enough to cost one.
 const MAX_CHALLENGES = 20000;
-async function putChallenge(data) {
-  if (SERVERLESS) {
-    const cid = crypto.randomBytes(16).toString('base64url');
-    await MIRROR.challenges.put(cid, data, Date.now() + 5 * 60000);
-    return cid;
-  }
+function putChallenge(data) {
   while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value);
   const cid = crypto.randomBytes(16).toString('base64url');
   challenges.set(cid, { ...data, exp: Date.now() + 5 * 60000 });
   return cid;
 }
-async function takeChallenge(cid) {
-  if (SERVERLESS) return typeof cid === 'string' ? MIRROR.challenges.take(cid) : null;
+function takeChallenge(cid) {
   const c = challenges.get(cid);
   challenges.delete(cid);
   if (!c || c.exp < Date.now()) return null;
@@ -1275,7 +1262,7 @@ function setPassword(user, h) {
 // outlives "sign out everywhere". Same ceremony as /api/login/verify, and the credential has
 // to belong to this account.
 async function passkeyStepUp(user, body) {
-  const c = await takeChallenge(body.cid);
+  const c = takeChallenge(body.cid);
   const cred = c?.kind === 'login' && db.creds.find(x => x.id === body.credential?.id && x.userId === user.id);
   if (!cred) return false;
   try {
@@ -1788,7 +1775,7 @@ const passkeyRoutes = {
     if (readSession(req) !== user) return notSignedIn(res);
     if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     const options = await moreOptions(user);
-    const cid = await putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
+    const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
     json(res, 200, { cid, options });
   },
 
@@ -1796,7 +1783,7 @@ const passkeyRoutes = {
     const user = readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    const c = await takeChallenge(text(body.cid));
+    const c = takeChallenge(text(body.cid));
     if (!c || c.kind !== 'add' || c.uid !== user.id) {
       audit(req, 'auth.passkey.fail', { ok: false, user, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -1892,7 +1879,7 @@ const passkeyRoutes = {
     }
     if (passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
-    const cid = await putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
+    const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
     json(res, 200, { cid, options, id: user.id, name: user.name });
   },
 
@@ -1903,7 +1890,7 @@ const passkeyRoutes = {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
     const code = text(body.code);
-    const c = await takeChallenge(text(body.cid));
+    const c = takeChallenge(text(body.cid));
     const link = findDeviceLink(db, code);
     if (!link) {
       strikeAddress(req, 'link');
@@ -2175,13 +2162,13 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = await putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
+    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
     json(res, 200, { cid, options });
   },
 
   'POST /api/register/verify': async (req, res) => {
     const body = await readBody(req);
-    const c = await takeChallenge(body.cid);
+    const c = takeChallenge(body.cid);
     if (!c || c.kind !== 'register' || !c.uid) {
       auditFail(req, 'auth.register.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -2239,13 +2226,13 @@ const routes = {
     const options = await generateAuthenticationOptions({
       rpID: RP_ID, userVerification: 'preferred', allowCredentials: []
     });
-    const cid = await putChallenge({ kind: 'login', challenge: options.challenge });
+    const cid = putChallenge({ kind: 'login', challenge: options.challenge });
     json(res, 200, { cid, options });
   },
 
   'POST /api/login/verify': async (req, res) => {
     const body = await readBody(req);
-    const c = await takeChallenge(body.cid);
+    const c = takeChallenge(body.cid);
     if (c?.kind !== 'login') {
       auditFail(req, 'auth.login.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -2994,11 +2981,7 @@ const server = http.createServer(async (req, res) => {
   // A write is answered only once it is in Mongo as well (mirror.js), so a 200 still means the
   // data survives a restart. Streaming reads are untouched. If Mongo does not answer in time the
   // response goes out anyway and the upload is retried in the background.
-  if (SERVERLESS) {
-    try { await MIRROR.pull(); }
-    catch (e) { console.error('mirror pull failed:', e.message); return json(res, 503, { error: 'storage unavailable' }); }
-  }
-  if (MIRROR && (SERVERLESS || (req.method !== 'GET' && req.method !== 'HEAD'))) {
+  if (MIRROR && req.method !== 'GET' && req.method !== 'HEAD') {
     const end = res.end.bind(res);
     res.end = (...a) => { MIRROR.flush().then(() => end(...a), () => end(...a)); return res; };
   }
@@ -3039,7 +3022,4 @@ server.headersTimeout = 60000;
 // port that was actually bound: with PORT=0 the OS picks one, and a caller that did not choose it
 // (the tests spawn the server that way, and so does anyone running two instances on one box) has
 // no other way to learn it.
-if (!SERVERLESS) server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
-
-// What the Vercel function (api/api/[...path].js) calls for every request.
-export default (req, res) => server.emit('request', req, res);
+server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));

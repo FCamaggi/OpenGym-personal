@@ -22,8 +22,6 @@ const sigOf = st => `${st.mtimeMs}:${st.size}:${st.ino}`;
 /** `col` is a MongoDB collection (find / bulkWrite); injectable so tests need no server. */
 export function createMirror({ dir, col, log = console, intervalMs = 15000 }) {
   const synced = new Map();            // name -> signature last known to be in Mongo
-  const tsOf = new Map();              // name -> `ts` of the Mongo document that file came from
-  let since = 0;                       // newest `ts` seen; pull() asks only for what is newer
   let timer = null;
 
   function list() {
@@ -45,8 +43,6 @@ export function createMirror({ dir, col, log = console, intervalMs = 15000 }) {
       fs.writeFileSync(file, d.text, { mode: 0o600 });
       fs.chmodSync(file, 0o600);
       synced.set(d._id, sigOf(fs.statSync(file)));
-      tsOf.set(d._id, d.ts);
-      if (d.ts > since) since = d.ts;
     }
     log.log(`mirror: restored ${synced.size} file(s) from MongoDB`);
   }
@@ -59,9 +55,8 @@ export function createMirror({ dir, col, log = console, intervalMs = 15000 }) {
       if (synced.get(name) === sig) continue;
       let text;
       try { text = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
-      const ts = Date.now();
-      ops.push({ replaceOne: { filter: { _id: name }, replacement: { _id: name, text, ts }, upsert: true } });
-      ups.push([name, sig, ts]);
+      ops.push({ replaceOne: { filter: { _id: name }, replacement: { _id: name, text, ts: Date.now() }, upsert: true } });
+      ups.push([name, sig]);
     }
     for (const name of synced.keys()) {
       if (cur.has(name)) continue;
@@ -70,26 +65,9 @@ export function createMirror({ dir, col, log = console, intervalMs = 15000 }) {
     }
     if (!ops.length) return true;
     await col.bulkWrite(ops, { ordered: false });
-    for (const [name, sig, ts] of ups) { synced.set(name, sig); tsOf.set(name, ts); if (ts > since) since = ts; }
-    for (const name of dels) { synced.delete(name); tsOf.delete(name); }
+    for (const [name, sig] of ups) synced.set(name, sig);
+    for (const name of dels) synced.delete(name);
     return true;
-  }
-
-  // For hosts where no process lives long enough to be the only writer (serverless): brings in what
-  // another instance uploaded since. Run before a request is handled, so it reads current files.
-  // The 5 s overlap covers clock skew between instances; a document already held is skipped.
-  // Deletions made elsewhere are not followed.
-  async function pull() {
-    const docs = await col.find({ ts: { $gt: since - 5000 } }).toArray();
-    for (const d of docs) {
-      if (!MIRRORED.test(d._id) || typeof d.text !== 'string' || tsOf.get(d._id) === d.ts) continue;
-      const file = path.join(dir, d._id);
-      fs.writeFileSync(file, d.text, { mode: 0o600 });
-      fs.chmodSync(file, 0o600);
-      synced.set(d._id, sigOf(fs.statSync(file)));
-      tsOf.set(d._id, d.ts);
-      if (d.ts > since) since = d.ts;
-    }
   }
 
   let chain = Promise.resolve(true);
@@ -112,42 +90,20 @@ export function createMirror({ dir, col, log = console, intervalMs = 15000 }) {
   }
   function stop() { if (timer) clearInterval(timer); timer = null; }
 
-  return { restore, pull, sync, flush, start, stop, _synced: synced };
-}
-
-/** Single-use WebAuthn challenges for hosts with no memory shared between requests: the ceremony's
- *  two requests may land on different instances. take() deletes atomically, so a challenge still
- *  works once. `col` is a MongoDB collection with a TTL index on `exp`. */
-export function createChallengeStore(col) {
-  return {
-    put: (cid, data, expMs) => col.insertOne({ _id: cid, data, exp: new Date(expMs) }),
-    take: async cid => {
-      const d = await col.findOneAndDelete({ _id: cid });
-      const doc = d?.value !== undefined ? d.value : d;   // driver 6 returns the document itself
-      return doc && doc.exp.getTime() >= Date.now() ? doc.data : null;
-    },
-  };
+  return { restore, sync, flush, start, stop, _synced: synced };
 }
 
 /** The real thing: connects with the driver (loaded only now, so it stays out of every other
- *  deployment) and restores. Throws if Mongo cannot be reached. `poll: false` skips the background
- *  timer (a serverless instance is frozen between requests; use pull() and flush() around each). */
-export async function startMirror({ dir, uri, dbName = 'opengym', collection = 'files', poll = true, log = console }) {
+ *  deployment) and restores. Throws if Mongo cannot be reached. */
+export async function startMirror({ dir, uri, dbName = 'opengym', collection = 'files', log = console }) {
   const { MongoClient } = await import('mongodb');
   const client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000, appName: 'opengym-api' });
   await client.connect();
-  const db = client.db(dbName);
-  const col = db.collection(collection);
+  const col = client.db(dbName).collection(collection);
   const m = createMirror({ dir, col, log });
   await m.restore();
   await m.sync();                       // files that only exist locally (a first migration)
-  if (poll) m.start();
-  else {
-    await col.createIndex({ ts: 1 });
-    const ch = db.collection('challenges');
-    await ch.createIndex({ exp: 1 }, { expireAfterSeconds: 0 });
-    m.challenges = createChallengeStore(ch);
-  }
+  m.start();
   m.close = () => client.close();
   return m;
 }
